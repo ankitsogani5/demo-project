@@ -3,79 +3,73 @@ package com.zensar.ankit.exception;
 import org.springframework.http.HttpStatus;
 
 /**
- * Core exception class that serves as the foundation for all custom exceptions in the application.
- * This class extends RuntimeException and provides common functionality such as error code,
- * error message, and HTTP status code that can be used by exception handlers to generate
- * appropriate error responses.
+ * Base exception class for all application exceptions.
+ * Provides standardized error handling with error codes and HTTP status codes.
+ * This class serves as the foundation for all custom exceptions in the application.
  */
 public class BaseException extends RuntimeException {
 
     private static final long serialVersionUID = 1L;
     
-    /**
-     * The error code associated with this exception
-     */
     private final String errorCode;
-    
-    /**
-     * The HTTP status code to be returned to the client
-     */
     private final HttpStatus httpStatus;
+    private final transient Object details;
 
     /**
      * Constructs a new BaseException with the specified error code, message, and HTTP status.
      *
-     * @param errorCode The error code associated with this exception
-     * @param message The detailed error message
-     * @param httpStatus The HTTP status code to be returned to the client
+     * @param errorCode   the error code for this exception
+     * @param message     the detailed message
+     * @param httpStatus  the HTTP status code to be returned to the client
      */
     public BaseException(String errorCode, String message, HttpStatus httpStatus) {
-        super(message);
-        this.errorCode = errorCode;
-        this.httpStatus = httpStatus;
+        this(errorCode, message, httpStatus, null);
     }
 
     /**
      * Constructs a new BaseException with the specified error code, message, HTTP status, and cause.
      *
-     * @param errorCode The error code associated with this exception
-     * @param message The detailed error message
-     * @param httpStatus The HTTP status code to be returned to the client
-     * @param cause The cause of this exception
+     * @param errorCode   the error code for this exception
+     * @param message     the detailed message
+     * @param httpStatus  the HTTP status code to be returned to the client
+     * @param cause       the cause of this exception
      */
     public BaseException(String errorCode, String message, HttpStatus httpStatus, Throwable cause) {
+        this(errorCode, message, httpStatus, cause, null);
+    }
+
+    /**
+     * Constructs a new BaseException with the specified error code, message, HTTP status, and additional details.
+     *
+     * @param errorCode   the error code for this exception
+     * @param message     the detailed message
+     * @param httpStatus  the HTTP status code to be returned to the client
+     * @param details     additional details about the exception
+     */
+    public BaseException(String errorCode, String message, HttpStatus httpStatus, Object details) {
+        this(errorCode, message, httpStatus, null, details);
+    }
+
+    /**
+     * Constructs a new BaseException with all parameters.
+     *
+     * @param errorCode   the error code for this exception
+     * @param message     the detailed message
+     * @param httpStatus  the HTTP status code to be returned to the client
+     * @param cause       the cause of this exception
+     * @param details     additional details about the exception
+     */
+    public BaseException(String errorCode, String message, HttpStatus httpStatus, Throwable cause, Object details) {
         super(message, cause);
         this.errorCode = errorCode;
         this.httpStatus = httpStatus;
-    }
-
-    /**
-     * Constructs a new BaseException with the specified error code and message, using
-     * HttpStatus.INTERNAL_SERVER_ERROR as the default HTTP status.
-     *
-     * @param errorCode The error code associated with this exception
-     * @param message The detailed error message
-     */
-    public BaseException(String errorCode, String message) {
-        this(errorCode, message, HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-
-    /**
-     * Constructs a new BaseException with the specified error code, message, and cause,
-     * using HttpStatus.INTERNAL_SERVER_ERROR as the default HTTP status.
-     *
-     * @param errorCode The error code associated with this exception
-     * @param message The detailed error message
-     * @param cause The cause of this exception
-     */
-    public BaseException(String errorCode, String message, Throwable cause) {
-        this(errorCode, message, HttpStatus.INTERNAL_SERVER_ERROR, cause);
+        this.details = details;
     }
 
     /**
      * Returns the error code associated with this exception.
      *
-     * @return The error code
+     * @return the error code
      */
     public String getErrorCode() {
         return errorCode;
@@ -84,9 +78,18 @@ public class BaseException extends RuntimeException {
     /**
      * Returns the HTTP status code to be returned to the client.
      *
-     * @return The HTTP status code
+     * @return the HTTP status code
      */
     public HttpStatus getHttpStatus() {
         return httpStatus;
+    }
+
+    /**
+     * Returns additional details about the exception.
+     *
+     * @return additional details, or null if none
+     */
+    public Object getDetails() {
+        return details;
     }
 }
