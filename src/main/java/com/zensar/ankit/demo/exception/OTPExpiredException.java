@@ -5,15 +5,15 @@ import org.springframework.http.HttpStatus;
 /**
  * Exception thrown when an OTP has exceeded its time-to-live (TTL) period, typically 10 minutes from generation.
  * This exception is used in the OTP verification process to indicate that the submitted OTP is no longer valid due to expiration.
+ * It includes a specific error code (OTP_EXPIRED) and HTTP status code (410 Gone).
  */
 public class OTPExpiredException extends OTPException {
 
     private static final long serialVersionUID = 1L;
     private static final String ERROR_CODE = "OTP_EXPIRED";
-    private static final HttpStatus HTTP_STATUS = HttpStatus.BAD_REQUEST;
-    private static final String DEFAULT_MESSAGE = "The OTP has expired";
-    private static final String SUGGESTED_ACTION = "Please request a new OTP and try again";
-
+    private static final HttpStatus HTTP_STATUS = HttpStatus.GONE;
+    private static final String DEFAULT_MESSAGE = "The OTP has expired. Please request a new OTP.";
+    
     /**
      * Constructs a new OTPExpiredException with the default message.
      */
@@ -37,35 +37,30 @@ public class OTPExpiredException extends OTPException {
      * @param cause the cause of the exception
      */
     public OTPExpiredException(String message, Throwable cause) {
-        super(message, cause, ERROR_CODE, HTTP_STATUS);
+        super(message, ERROR_CODE, HTTP_STATUS, cause);
     }
 
     /**
-     * Constructs a new OTPExpiredException with the default message and the specified mobile number.
+     * Constructs a new OTPExpiredException with a message including the mobile number.
      *
      * @param mobileNumber the mobile number for which the OTP has expired
      * @return a new OTPExpiredException with a message including the mobile number
      */
     public static OTPExpiredException forMobileNumber(String mobileNumber) {
-        return new OTPExpiredException("OTP for mobile number: " + mobileNumber + " has expired. " + SUGGESTED_ACTION);
+        String message = String.format("The OTP for mobile number %s has expired. Please request a new OTP.", 
+                mobileNumber);
+        return new OTPExpiredException(message);
     }
 
     /**
-     * Constructs a new OTPExpiredException with the default message and the specified reference ID.
+     * Constructs a new OTPExpiredException with a message including the reference ID.
      *
      * @param referenceId the reference ID for which the OTP has expired
      * @return a new OTPExpiredException with a message including the reference ID
      */
     public static OTPExpiredException forReferenceId(String referenceId) {
-        return new OTPExpiredException("OTP for reference ID: " + referenceId + " has expired. " + SUGGESTED_ACTION);
-    }
-
-    /**
-     * Returns the suggested action for this exception.
-     *
-     * @return the suggested action to resolve the issue
-     */
-    public String getSuggestedAction() {
-        return SUGGESTED_ACTION;
+        String message = String.format("The OTP for reference ID %s has expired. Please request a new OTP.", 
+                referenceId);
+        return new OTPExpiredException(message);
     }
 }
