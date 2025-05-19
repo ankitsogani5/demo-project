@@ -2,7 +2,12 @@ package com.zensar.ankit.demo.service;
 
 import com.zensar.ankit.demo.entity.User;
 
+/**
+ * Service interface for user management operations.
+ * This service is responsible for user registration with mobile verification.
+ */
 public interface UserService {
+	
 	/**
 	 * Saves a user to the database without verification checks.
 	 * This method should only be used for internal purposes or when verification
