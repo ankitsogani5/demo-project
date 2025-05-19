@@ -1,48 +1,56 @@
 package com.zensar.ankit.demo.service.impl;
 
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
+import com.zensar.ankit.demo.dto.OTPResponseDTO;
 import com.zensar.ankit.demo.entity.OTP;
+import com.zensar.ankit.demo.exception.OTPAttemptsExceededException;
+import com.zensar.ankit.demo.exception.OTPDeliveryFailureException;
+import com.zensar.ankit.demo.exception.OTPException;
+import com.zensar.ankit.demo.exception.OTPExpiredException;
+import com.zensar.ankit.demo.exception.OTPGenerationFailedException;
+import com.zensar.ankit.demo.exception.OTPInvalidException;
+import com.zensar.ankit.demo.exception.OTPNotFoundException;
+import com.zensar.ankit.demo.exception.OTPRateLimitedException;
 import com.zensar.ankit.demo.repository.OTPRepository;
 import com.zensar.ankit.demo.service.OTPService;
 import com.zensar.ankit.demo.service.SMSService;
 
 /**
- * Implementation of the OTPService interface that provides OTP generation,
- * verification, and management functionality.
+ * Implementation of the OTPService interface for generating, verifying, and managing
+ * One-Time Passwords (OTPs) for mobile number verification.
  * 
- * This service is responsible for creating secure random OTP codes, sending them via SMS,
- * verifying submitted codes, and managing expiration. It uses Google Guava for caching
- * OTP codes to improve performance and implements rate limiting to prevent abuse.
+ * This service is responsible for:
+ * 1. Generating secure random OTP codes
+ * 2. Sending OTPs via SMS
+ * 3. Verifying submitted OTP codes
+ * 4. Managing OTP expiration
+ * 5. Tracking verification attempts
+ * 6. Implementing rate limiting to prevent abuse
  */
 @Service
 public class OTPServiceImpl implements OTPService {
-    
+
     private static final Logger logger = LoggerFactory.getLogger(OTPServiceImpl.class);
     
-    // Constants for OTP generation and validation
-    private static final int OTP_LENGTH = 6;
-    private static final int OTP_EXPIRATION_MINUTES = 10;
-    private static final int MAX_VERIFICATION_ATTEMPTS = 3;
-    private static final int RATE_LIMIT_WINDOW_MINUTES = 10;
-    private static final int MAX_REQUESTS_PER_WINDOW = 3;
+    private static final String OTP_CHARS = "0123456789";
+    private static final String SECURE_RANDOM_ALGORITHM = "SHA1PRNG";
     
-    // Cache for storing OTP entities with 10-minute expiration
-    private final LoadingCache<String, OTP> otpCache;
-    
-    // Cache for rate limiting OTP generation requests
-    private final LoadingCache<String, Integer> rateLimitCache;
+    private final SecureRandom secureRandom;
     
     @Autowired
     private OTPRepository otpRepository;
@@ -50,336 +58,387 @@ public class OTPServiceImpl implements OTPService {
     @Autowired
     private SMSService smsService;
     
-    // SecureRandom for generating cryptographically strong random OTP codes
-    private final SecureRandom secureRandom;
+    // Configuration properties with default values
+    @Value("${otp.length:6}")
+    private int otpLength;
+    
+    @Value("${otp.expiration.seconds:600}")
+    private int otpExpirationSeconds;
+    
+    @Value("${otp.max-attempts:3}")
+    private int maxVerificationAttempts;
+    
+    @Value("${otp.rate-limit.max-requests:3}")
+    private int maxRequestsPerWindow;
+    
+    @Value("${otp.rate-limit.window-hours:1}")
+    private int rateLimitWindowHours;
+    
+    @Value("${otp.cooling-period.seconds:300}")
+    private int coolingPeriodSeconds;
+    
+    // In-memory cache for OTP rate limiting
+    private final LoadingCache<String, Integer> otpRequestCountCache;
+    
+    // In-memory cache for OTP verification
+    private final LoadingCache<String, OTP> otpCache;
     
     /**
-     * Constructor that initializes the caches and secure random generator.
+     * Constructor that initializes the SecureRandom instance and caches.
+     * 
+     * @throws OTPGenerationFailedException if the SecureRandom algorithm is not available
      */
     public OTPServiceImpl() {
-        // Initialize SecureRandom
-        this.secureRandom = new SecureRandom();
-        
-        // Initialize OTP cache with 10-minute expiration
-        this.otpCache = CacheBuilder.newBuilder()
-                .maximumSize(10000) // Maximum cache size
-                .expireAfterWrite(OTP_EXPIRATION_MINUTES, TimeUnit.MINUTES)
-                .build(new CacheLoader<String, OTP>() {
-                    @Override
-                    public OTP load(String mobileNumber) throws Exception {
-                        // Load OTP from database if not in cache
-                        return otpRepository.findLatestValidOtpForMobile(mobileNumber)
-                                .orElseThrow(() -> new Exception("No valid OTP found for mobile number: " + mobileNumber));
-                    }
-                });
-        
-        // Initialize rate limit cache with 10-minute window
-        this.rateLimitCache = CacheBuilder.newBuilder()
-                .maximumSize(10000) // Maximum cache size
-                .expireAfterWrite(RATE_LIMIT_WINDOW_MINUTES, TimeUnit.MINUTES)
-                .build(new CacheLoader<String, Integer>() {
-                    @Override
-                    public Integer load(String key) throws Exception {
-                        return 0; // Initial count is 0
-                    }
-                });
+        try {
+            // Initialize SecureRandom with a strong algorithm
+            this.secureRandom = SecureRandom.getInstance(SECURE_RANDOM_ALGORITHM);
+            
+            // Initialize rate limiting cache
+            this.otpRequestCountCache = CacheBuilder.newBuilder()
+                    .maximumSize(10000)
+                    .expireAfterWrite(1, TimeUnit.HOURS)
+                    .build(new CacheLoader<String, Integer>() {
+                        @Override
+                        public Integer load(String key) {
+                            return 0;
+                        }
+                    });
+            
+            // Initialize OTP cache for faster verification
+            this.otpCache = CacheBuilder.newBuilder()
+                    .maximumSize(10000)
+                    .expireAfterWrite(10, TimeUnit.MINUTES)
+                    .build(new CacheLoader<String, OTP>() {
+                        @Override
+                        public OTP load(String mobileNumber) {
+                            // Load from database if not in cache
+                            Optional<OTP> latestOtp = otpRepository.findLatestValidOtpForMobile(
+                                    mobileNumber, LocalDateTime.now());
+                            return latestOtp.orElseThrow(() -> 
+                                new OTPNotFoundException("No valid OTP found for mobile number: " + mobileNumber));
+                        }
+                    });
+            
+        } catch (NoSuchAlgorithmException e) {
+            logger.error("Failed to initialize SecureRandom with algorithm: {}", SECURE_RANDOM_ALGORITHM, e);
+            throw new OTPGenerationFailedException("Failed to initialize OTP generator", e);
+        }
     }
-    
+
     /**
-     * {@inheritDoc}
+     * Generates a new OTP for the specified mobile number and sends it via SMS.
+     * If an existing OTP is still valid, it will be invalidated before generating a new one.
+     * 
+     * @param mobileNumber The mobile number to send the OTP to (must be 10 digits)
+     * @return OTPResponseDTO containing the reference ID and expiration time
+     * @throws OTPException if OTP generation or SMS sending fails
      */
     @Override
     @Transactional
-    public String generateOTP(String mobileNumber) {
+    public OTPResponseDTO generateOTP(String mobileNumber) throws OTPException {
         logger.info("Generating OTP for mobile number: {}", mobileNumber);
-        
-        // Validate mobile number format
-        validateMobileNumber(mobileNumber);
         
         // Check rate limiting
         checkRateLimit(mobileNumber);
         
-        // Generate a secure random 6-digit OTP
-        String otpCode = generateRandomOTP();
+        // Invalidate any existing OTPs for this mobile number
+        invalidateOTP(mobileNumber);
         
-        // Create and persist OTP entity
+        // Generate a new secure random OTP code
+        String otpCode = generateSecureOTP(otpLength);
+        
+        // Create and persist the OTP entity
         OTP otp = new OTP(mobileNumber, otpCode);
         otp = otpRepository.save(otp);
         
-        // Add to cache for faster retrieval during verification
+        // Add to cache for faster verification
         otpCache.put(mobileNumber, otp);
         
-        // Send OTP via SMS
-        boolean smsSent = sendOTPViaSMS(mobileNumber, otpCode);
-        if (!smsSent) {
-            logger.error("Failed to send OTP via SMS to mobile number: {}", mobileNumber);
-            throw new RuntimeException("Failed to send OTP via SMS");
-        }
+        // Increment request count for rate limiting
+        incrementRequestCount(mobileNumber);
         
-        // Return a reference ID (using the OTP entity ID)
-        return String.valueOf(otp.getId());
+        // Send OTP via SMS
+        try {
+            String message = formatOTPMessage(otpCode);
+            boolean smsSent = smsService.sendSMS(mobileNumber, message);
+            
+            if (!smsSent) {
+                throw new OTPDeliveryFailureException("Failed to send OTP via SMS to " + mobileNumber);
+            }
+            
+            // Create response with reference ID (using OTP entity ID as reference)
+            OTPResponseDTO response = new OTPResponseDTO(
+                    otp.getId().toString(),
+                    "SUCCESS",
+                    "OTP sent successfully to your mobile number");
+            
+            logger.info("OTP generated successfully for mobile number: {}", mobileNumber);
+            return response;
+            
+        } catch (Exception e) {
+            logger.error("Error sending OTP via SMS to {}: {}", mobileNumber, e.getMessage(), e);
+            throw new OTPDeliveryFailureException("Failed to send OTP via SMS", e);
+        }
     }
-    
+
     /**
-     * {@inheritDoc}
+     * Verifies the submitted OTP code against the stored OTP for the given mobile number.
+     * This method checks if the OTP is valid, not expired, and matches the stored code.
+     * It also tracks verification attempts and handles maximum attempt limits.
+     * 
+     * @param mobileNumber The mobile number associated with the OTP
+     * @param otpCode The OTP code submitted by the user
+     * @return true if verification is successful, false otherwise
+     * @throws OTPException if verification fails due to invalid code, expiration, or max attempts
      */
     @Override
     @Transactional
-    public boolean verifyOTP(String mobileNumber, String otpCode) {
+    public boolean verifyOTP(String mobileNumber, String otpCode) throws OTPException {
         logger.info("Verifying OTP for mobile number: {}", mobileNumber);
         
-        // Validate inputs
-        validateMobileNumber(mobileNumber);
-        validateOTPCode(otpCode);
-        
+        // Get the latest OTP for this mobile number
+        OTP otp;
         try {
-            // Try to get OTP from cache first
-            OTP otp = otpCache.getUnchecked(mobileNumber);
+            // Try to get from cache first
+            otp = otpCache.get(mobileNumber);
+        } catch (Exception e) {
+            // If not in cache, try to get from database
+            Optional<OTP> latestOtp = otpRepository.findLatestValidOtpForMobile(
+                    mobileNumber, LocalDateTime.now());
             
-            // If not in cache or exception occurred, try to get from database
-            if (otp == null) {
-                otp = otpRepository.findLatestValidOtpForMobile(mobileNumber)
-                        .orElseThrow(() -> new RuntimeException("No valid OTP found for mobile number: " + mobileNumber));
+            if (!latestOtp.isPresent()) {
+                logger.warn("No valid OTP found for mobile number: {}", mobileNumber);
+                throw new OTPNotFoundException("No valid OTP found for mobile number: " + mobileNumber);
             }
             
-            // Check if OTP is expired
-            if (otp.isExpired()) {
-                logger.info("OTP has expired for mobile number: {}", mobileNumber);
-                otp.markAsExpired();
-                otpRepository.save(otp);
-                return false;
-            }
-            
-            // Check if max attempts reached
-            if (otp.isMaxAttemptsReached()) {
-                logger.info("Maximum verification attempts reached for mobile number: {}", mobileNumber);
-                otp.markAsFailed();
-                otpRepository.save(otp);
-                return false;
-            }
-            
-            // Increment attempt counter
-            otp.incrementAttempts();
-            
-            // Verify OTP code
-            boolean isValid = otp.getOtpCode().equals(otpCode);
-            
-            if (isValid) {
-                // Mark as verified if OTP is correct
-                otp.markAsVerified();
-                logger.info("OTP verified successfully for mobile number: {}", mobileNumber);
-            } else if (otp.isMaxAttemptsReached()) {
-                // Mark as failed if max attempts reached after this attempt
-                otp.markAsFailed();
-                logger.info("OTP verification failed (max attempts) for mobile number: {}", mobileNumber);
-            } else {
-                logger.info("OTP verification failed for mobile number: {}, attempts: {}", 
-                        mobileNumber, otp.getVerificationAttempts());
-            }
-            
-            // Save updated OTP entity
+            otp = latestOtp.get();
+            // Update cache
+            otpCache.put(mobileNumber, otp);
+        }
+        
+        // Check if OTP has expired
+        if (otp.isExpired()) {
+            logger.warn("OTP has expired for mobile number: {}", mobileNumber);
+            otp.markAsExpired();
+            otpRepository.save(otp);
+            otpCache.invalidate(mobileNumber);
+            throw new OTPExpiredException.forMobileNumber(mobileNumber);
+        }
+        
+        // Check if max attempts reached
+        if (otp.isMaxAttemptsReached()) {
+            logger.warn("Maximum verification attempts reached for mobile number: {}", mobileNumber);
+            otp.markAsFailed();
+            otpRepository.save(otp);
+            otpCache.invalidate(mobileNumber);
+            throw new OTPAttemptsExceededException(coolingPeriodSeconds);
+        }
+        
+        // Increment attempt counter
+        otp.incrementAttempts();
+        
+        // Verify OTP code
+        if (!otp.getOtpCode().equals(otpCode)) {
+            logger.warn("Invalid OTP provided for mobile number: {}", mobileNumber);
             otpRepository.save(otp);
             
-            // Update cache with the latest state
-            if (isValid) {
+            // Check if this attempt reached the max attempts
+            if (otp.isMaxAttemptsReached()) {
+                otp.markAsFailed();
+                otpRepository.save(otp);
                 otpCache.invalidate(mobileNumber);
-            } else {
-                otpCache.put(mobileNumber, otp);
+                throw new OTPAttemptsExceededException(coolingPeriodSeconds);
             }
             
-            return isValid;
-        } catch (Exception e) {
-            logger.error("Error verifying OTP for mobile number: {}", mobileNumber, e);
-            return false;
+            // Calculate remaining attempts
+            int remainingAttempts = maxVerificationAttempts - otp.getVerificationAttempts();
+            throw new OTPInvalidException.forMobileNumber(mobileNumber, remainingAttempts);
         }
+        
+        // OTP is valid, mark as verified
+        otp.markAsVerified();
+        otpRepository.save(otp);
+        otpCache.invalidate(mobileNumber);
+        
+        logger.info("OTP verified successfully for mobile number: {}", mobileNumber);
+        return true;
     }
-    
+
     /**
-     * {@inheritDoc}
+     * Checks if a mobile number has been successfully verified through the OTP process.
+     * This is used to determine if a user can proceed with registration or other protected actions.
+     * 
+     * @param mobileNumber The mobile number to check verification status for
+     * @return true if the mobile number has been verified, false otherwise
      */
     @Override
     public boolean checkMobileVerified(String mobileNumber) {
-        logger.info("Checking mobile verification status for: {}", mobileNumber);
+        logger.debug("Checking mobile verification status for: {}", mobileNumber);
         
-        // Validate mobile number format
-        validateMobileNumber(mobileNumber);
-        
-        // Check if any OTP for this mobile number has been verified
-        return otpRepository.findByUserMobileNumber(mobileNumber).stream()
-                .anyMatch(otp -> "VERIFIED".equals(otp.getVerificationStatus()));
+        // Check if there's a verified OTP for this mobile number
+        return !otpRepository.findByUserMobileNumberAndVerificationStatus(mobileNumber, "VERIFIED").isEmpty();
     }
-    
+
     /**
-     * {@inheritDoc}
-     */
-    @Override
-    public int getRemainingAttempts(String mobileNumber) {
-        try {
-            OTP otp = otpCache.getUnchecked(mobileNumber);
-            if (otp != null && !otp.isExpired() && "PENDING".equals(otp.getVerificationStatus())) {
-                return MAX_VERIFICATION_ATTEMPTS - otp.getVerificationAttempts();
-            }
-        } catch (Exception e) {
-            // If not in cache, try database
-            return otpRepository.findLatestValidOtpForMobile(mobileNumber)
-                    .map(otp -> MAX_VERIFICATION_ATTEMPTS - otp.getVerificationAttempts())
-                    .orElse(0);
-        }
-        return 0;
-    }
-    
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public boolean isOTPExpired(String mobileNumber) {
-        try {
-            OTP otp = otpCache.getUnchecked(mobileNumber);
-            return otp == null || otp.isExpired();
-        } catch (Exception e) {
-            // If not in cache, try database
-            return otpRepository.findLatestValidOtpForMobile(mobileNumber)
-                    .map(OTP::isExpired)
-                    .orElse(true); // If no OTP found, consider it expired
-        }
-    }
-    
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public LocalDateTime getOTPExpirationTime(String mobileNumber) {
-        try {
-            OTP otp = otpCache.getUnchecked(mobileNumber);
-            return otp != null ? otp.getExpirationTimestamp() : null;
-        } catch (Exception e) {
-            // If not in cache, try database
-            return otpRepository.findLatestValidOtpForMobile(mobileNumber)
-                    .map(OTP::getExpirationTimestamp)
-                    .orElse(null);
-        }
-    }
-    
-    /**
-     * {@inheritDoc}
+     * Invalidates any existing OTPs for the specified mobile number.
+     * This is typically used when a user requests a new OTP or when maximum verification
+     * attempts have been reached.
+     * 
+     * @param mobileNumber The mobile number for which to invalidate OTPs
+     * @return true if OTPs were successfully invalidated, false if no OTPs were found
      */
     @Override
     @Transactional
     public boolean invalidateOTP(String mobileNumber) {
-        logger.info("Invalidating OTP for mobile number: {}", mobileNumber);
+        logger.debug("Invalidating existing OTPs for mobile number: {}", mobileNumber);
         
+        // Remove from cache
+        otpCache.invalidate(mobileNumber);
+        
+        // Get all pending OTPs for this mobile number
+        LocalDateTime now = LocalDateTime.now();
+        Optional<OTP> latestOtp = otpRepository.findLatestValidOtpForMobile(mobileNumber, now);
+        
+        if (latestOtp.isPresent()) {
+            OTP otp = latestOtp.get();
+            otp.markAsExpired();
+            otpRepository.save(otp);
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * Returns the configured OTP expiration time in minutes.
+     * This is used for informational purposes to let users know how long they have to verify.
+     * 
+     * @return The OTP expiration time in minutes
+     */
+    @Override
+    public int getOTPExpirationTime() {
+        return otpExpirationSeconds / 60; // Convert seconds to minutes
+    }
+
+    /**
+     * Returns the maximum number of verification attempts allowed for an OTP.
+     * After this limit is reached, the OTP is invalidated and a new one must be generated.
+     * 
+     * @return The maximum number of verification attempts allowed
+     */
+    @Override
+    public int getMaxVerificationAttempts() {
+        return maxVerificationAttempts;
+    }
+
+    /**
+     * Returns the remaining verification attempts for the given mobile number.
+     * This is used to inform users how many attempts they have left before the OTP is invalidated.
+     * 
+     * @param mobileNumber The mobile number to check remaining attempts for
+     * @return The number of remaining verification attempts, or 0 if no valid OTP exists
+     */
+    @Override
+    public int getRemainingVerificationAttempts(String mobileNumber) {
         try {
-            // Remove from cache
-            otpCache.invalidate(mobileNumber);
-            
-            // Update in database
-            return otpRepository.findLatestValidOtpForMobile(mobileNumber)
-                    .map(otp -> {
-                        otp.markAsExpired();
-                        otpRepository.save(otp);
-                        return true;
-                    })
-                    .orElse(false);
+            // Try to get from cache first
+            OTP otp = otpCache.get(mobileNumber);
+            return Math.max(0, maxVerificationAttempts - otp.getVerificationAttempts());
         } catch (Exception e) {
-            logger.error("Error invalidating OTP for mobile number: {}", mobileNumber, e);
-            return false;
+            // If not in cache, try to get from database
+            Optional<OTP> latestOtp = otpRepository.findLatestValidOtpForMobile(
+                    mobileNumber, LocalDateTime.now());
+            
+            if (latestOtp.isPresent()) {
+                return Math.max(0, maxVerificationAttempts - latestOtp.get().getVerificationAttempts());
+            }
+            
+            return 0; // No valid OTP exists
         }
     }
     
     /**
-     * Generates a secure random 6-digit OTP code.
+     * Generates a secure random OTP code of the specified length.
+     * Uses SecureRandom to ensure cryptographically strong randomness.
      * 
-     * @return A 6-digit OTP code as a string
+     * @param length The length of the OTP code to generate
+     * @return A secure random OTP code
      */
-    private String generateRandomOTP() {
-        // Generate a random number between 0 and 999999
-        int randomNumber = secureRandom.nextInt(1000000);
+    private String generateSecureOTP(int length) {
+        StringBuilder otpBuilder = new StringBuilder(length);
         
-        // Format as a 6-digit string with leading zeros if needed
-        return String.format("%06d", randomNumber);
-    }
-    
-    /**
-     * Sends the OTP code to the specified mobile number via SMS.
-     * 
-     * @param mobileNumber The mobile number to send the OTP to
-     * @param otpCode The OTP code to send
-     * @return true if the SMS was sent successfully, false otherwise
-     */
-    private boolean sendOTPViaSMS(String mobileNumber, String otpCode) {
-        String message = String.format("Your verification code is %s. Valid for %d minutes.", 
-                otpCode, OTP_EXPIRATION_MINUTES);
+        for (int i = 0; i < length; i++) {
+            int randomIndex = secureRandom.nextInt(OTP_CHARS.length());
+            otpBuilder.append(OTP_CHARS.charAt(randomIndex));
+        }
         
-        return smsService.sendSMS(mobileNumber, message);
+        return otpBuilder.toString();
     }
     
     /**
-     * Validates the mobile number format.
+     * Formats the OTP message to be sent via SMS.
      * 
-     * @param mobileNumber The mobile number to validate
-     * @throws IllegalArgumentException if the mobile number format is invalid
+     * @param otpCode The OTP code to include in the message
+     * @return The formatted message text
      */
-    private void validateMobileNumber(String mobileNumber) {
-        if (mobileNumber == null || !mobileNumber.matches("\\d{10}")) {
-            throw new IllegalArgumentException("Invalid mobile number format. Must be a 10-digit number.");
-        }
+    private String formatOTPMessage(String otpCode) {
+        int expirationMinutes = getOTPExpirationTime();
+        return String.format("Your verification code is %s. It will expire in %d minutes. Do not share this code with anyone.", 
+                otpCode, expirationMinutes);
     }
     
     /**
-     * Validates the OTP code format.
-     * 
-     * @param otpCode The OTP code to validate
-     * @throws IllegalArgumentException if the OTP code format is invalid
-     */
-    private void validateOTPCode(String otpCode) {
-        if (otpCode == null || !otpCode.matches("\\d{" + OTP_LENGTH + "}")) {
-            throw new IllegalArgumentException("Invalid OTP format. Must be a " + OTP_LENGTH + "-digit number.");
-        }
-    }
-    
-    /**
-     * Checks if the mobile number has exceeded the rate limit for OTP generation.
+     * Checks if the mobile number has exceeded the rate limit for OTP requests.
+     * Throws OTPRateLimitedException if the limit is exceeded.
      * 
      * @param mobileNumber The mobile number to check
-     * @throws RuntimeException if the rate limit has been exceeded
+     * @throws OTPRateLimitedException if rate limit is exceeded
      */
-    private void checkRateLimit(String mobileNumber) {
+    private void checkRateLimit(String mobileNumber) throws OTPRateLimitedException {
         try {
-            // Get current count from cache
-            int currentCount = rateLimitCache.get(mobileNumber);
+            int requestCount = otpRequestCountCache.get(mobileNumber);
             
-            // Check if limit exceeded
-            if (currentCount >= MAX_REQUESTS_PER_WINDOW) {
+            if (requestCount >= maxRequestsPerWindow) {
                 logger.warn("Rate limit exceeded for mobile number: {}", mobileNumber);
-                throw new RuntimeException("Rate limit exceeded. Please try again later.");
+                throw OTPRateLimitedException.forMobileNumber(mobileNumber, rateLimitWindowHours * 3600);
             }
             
-            // Increment count
-            rateLimitCache.put(mobileNumber, currentCount + 1);
+            // Also check database for additional verification
+            LocalDateTime windowStart = LocalDateTime.now().minusHours(rateLimitWindowHours);
+            long dbRequestCount = otpRepository.countRecentOtpsForMobile(mobileNumber, windowStart);
             
-            // Double-check with database for additional security
-            LocalDateTime windowStart = LocalDateTime.now().minusMinutes(RATE_LIMIT_WINDOW_MINUTES);
-            int dbCount = otpRepository.countRecentOtpsForMobile(mobileNumber, windowStart);
-            
-            if (dbCount >= MAX_REQUESTS_PER_WINDOW) {
-                logger.warn("Database rate limit check exceeded for mobile number: {}", mobileNumber);
-                throw new RuntimeException("Rate limit exceeded. Please try again later.");
+            if (dbRequestCount >= maxRequestsPerWindow) {
+                logger.warn("Rate limit exceeded (database check) for mobile number: {}", mobileNumber);
+                throw OTPRateLimitedException.forMobileNumber(mobileNumber, rateLimitWindowHours * 3600);
             }
+            
+        } catch (OTPRateLimitedException e) {
+            throw e;
         } catch (Exception e) {
-            if (e instanceof RuntimeException && e.getMessage().contains("Rate limit exceeded")) {
-                throw (RuntimeException) e;
-            }
-            // For cache loading exceptions, default to database check
-            LocalDateTime windowStart = LocalDateTime.now().minusMinutes(RATE_LIMIT_WINDOW_MINUTES);
-            int dbCount = otpRepository.countRecentOtpsForMobile(mobileNumber, windowStart);
+            // If cache access fails, fall back to database check only
+            LocalDateTime windowStart = LocalDateTime.now().minusHours(rateLimitWindowHours);
+            long dbRequestCount = otpRepository.countRecentOtpsForMobile(mobileNumber, windowStart);
             
-            if (dbCount >= MAX_REQUESTS_PER_WINDOW) {
-                logger.warn("Database rate limit check exceeded for mobile number: {}", mobileNumber);
-                throw new RuntimeException("Rate limit exceeded. Please try again later.");
+            if (dbRequestCount >= maxRequestsPerWindow) {
+                logger.warn("Rate limit exceeded (database fallback) for mobile number: {}", mobileNumber);
+                throw OTPRateLimitedException.forMobileNumber(mobileNumber, rateLimitWindowHours * 3600);
             }
-            
-            // Initialize cache with current count from database
-            rateLimitCache.put(mobileNumber, dbCount + 1);
+        }
+    }
+    
+    /**
+     * Increments the request count for the given mobile number in the rate limiting cache.
+     * 
+     * @param mobileNumber The mobile number to increment the count for
+     */
+    private void incrementRequestCount(String mobileNumber) {
+        try {
+            int currentCount = otpRequestCountCache.get(mobileNumber);
+            otpRequestCountCache.put(mobileNumber, currentCount + 1);
+        } catch (Exception e) {
+            logger.warn("Failed to increment request count for {}: {}", mobileNumber, e.getMessage());
+            // Continue execution even if cache update fails
+            // The database check in checkRateLimit will serve as a fallback
         }
     }
 }
