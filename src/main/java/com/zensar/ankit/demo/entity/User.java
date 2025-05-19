@@ -35,6 +35,9 @@ public class User {
 	@Pattern(regexp = "[\\d]{10}", message = "mobile number should be 10 digit number")
 	private String mobileNumber;
 
+	@ApiModelProperty(notes = "Indicates whether the mobile number has been verified through OTP")
+	private boolean mobileVerificationStatus = false;
+
 	/**
 	 * @return the id
 	 */
@@ -108,6 +111,21 @@ public class User {
 	 */
 	public void setMobileNumber(String mobileNumber) {
 		this.mobileNumber = mobileNumber;
+	}
+
+	/**
+	 * @return the mobileVerificationStatus
+	 */
+	public boolean isMobileVerificationStatus() {
+		return mobileVerificationStatus;
+	}
+
+	/**
+	 * @param mobileVerificationStatus
+	 *            the mobileVerificationStatus to set
+	 */
+	public void setMobileVerificationStatus(boolean mobileVerificationStatus) {
+		this.mobileVerificationStatus = mobileVerificationStatus;
 	}
 
 }
