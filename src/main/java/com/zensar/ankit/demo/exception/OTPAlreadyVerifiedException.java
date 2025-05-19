@@ -5,13 +5,14 @@ import org.springframework.http.HttpStatus;
 /**
  * Exception thrown when an attempt is made to verify an OTP that has already been successfully verified.
  * This exception is used to prevent replay attacks where the same OTP is used multiple times.
+ * It returns HTTP status code 400 (Bad Request) and includes a specific error code.
  */
 public class OTPAlreadyVerifiedException extends OTPException {
 
     private static final long serialVersionUID = 1L;
+    private static final String DEFAULT_MESSAGE = "This OTP has already been verified";
     private static final String ERROR_CODE = "OTP_ALREADY_VERIFIED";
     private static final HttpStatus HTTP_STATUS = HttpStatus.BAD_REQUEST;
-    private static final String DEFAULT_MESSAGE = "This OTP has already been verified successfully";
     private static final String SUGGESTED_ACTION = "Please proceed to the next step in the registration process";
 
     /**
@@ -58,7 +59,7 @@ public class OTPAlreadyVerifiedException extends OTPException {
      * @return a new OTPAlreadyVerifiedException with a message including the reference ID
      */
     public static OTPAlreadyVerifiedException forReferenceId(String referenceId) {
-        return new OTPAlreadyVerifiedException("OTP with reference ID: " + referenceId + 
+        return new OTPAlreadyVerifiedException("OTP for reference ID: " + referenceId + 
                 " has already been verified. " + SUGGESTED_ACTION);
     }
 
