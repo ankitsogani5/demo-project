@@ -1,25 +1,23 @@
 package com.zensar.ankit.dto;
 
-import javax.validation.constraints.NotBlank;
-import javax.validation.constraints.Pattern;
-
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 
 /**
  * Data Transfer Object for OTP verification requests.
  * This class encapsulates the request ID and OTP code needed to verify a previously generated OTP.
  */
-@Schema(description = "Request payload for OTP verification")
 public class OTPVerificationDTO {
 
     @NotBlank(message = "Request ID cannot be empty")
-    @Schema(description = "Unique request ID received during OTP generation", 
-            example = "abc123def456", 
+    @Schema(description = "Unique identifier for the OTP verification session", 
+            example = "a1b2c3d4-e5f6-7890", 
             required = true)
     private String requestId;
 
     @NotBlank(message = "OTP code cannot be empty")
-    @Pattern(regexp = "[0-9]{6}", message = "OTP code must be a 6-digit number")
+    @Pattern(regexp = "^\\d{6}$", message = "OTP must be a 6-digit number")
     @Schema(description = "6-digit OTP code received via SMS", 
             example = "123456", 
             required = true)
@@ -34,8 +32,8 @@ public class OTPVerificationDTO {
     /**
      * Parameterized constructor
      * 
-     * @param requestId Unique request ID received during OTP generation
-     * @param otpCode   6-digit OTP code received via SMS
+     * @param requestId Unique identifier for the OTP verification session
+     * @param otpCode 6-digit OTP code received via SMS
      */
     public OTPVerificationDTO(String requestId, String otpCode) {
         this.requestId = requestId;
@@ -43,30 +41,46 @@ public class OTPVerificationDTO {
     }
 
     /**
-     * @return the requestId
+     * Get the request ID
+     * 
+     * @return the request ID that identifies the OTP verification session
      */
     public String getRequestId() {
         return requestId;
     }
 
     /**
-     * @param requestId the requestId to set
+     * Set the request ID
+     * 
+     * @param requestId the request ID that identifies the OTP verification session
      */
     public void setRequestId(String requestId) {
         this.requestId = requestId;
     }
 
     /**
-     * @return the otpCode
+     * Get the OTP code
+     * 
+     * @return the 6-digit OTP code submitted for verification
      */
     public String getOtpCode() {
         return otpCode;
     }
 
     /**
-     * @param otpCode the otpCode to set
+     * Set the OTP code
+     * 
+     * @param otpCode the 6-digit OTP code submitted for verification
      */
     public void setOtpCode(String otpCode) {
         this.otpCode = otpCode;
+    }
+
+    @Override
+    public String toString() {
+        return "OTPVerificationDTO{" +
+                "requestId='" + requestId + '\'' +
+                ", otpCode='[PROTECTED]'" +
+                '}';
     }
 }
