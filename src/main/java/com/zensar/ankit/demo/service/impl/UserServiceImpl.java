@@ -12,8 +12,8 @@ import com.zensar.ankit.demo.service.OTPService;
 import com.zensar.ankit.demo.service.UserService;
 
 /**
- * Implementation of the UserService interface that handles user registration
- * with OTP verification for mobile numbers.
+ * Implementation of the UserService interface.
+ * This service handles user registration with mobile verification through OTP.
  */
 @Service
 public class UserServiceImpl implements UserService {
@@ -33,7 +33,6 @@ public class UserServiceImpl implements UserService {
 	 * @return The saved user with generated ID
 	 */
 	@Override
-	@Transactional
 	public User save(User user) {
 		return repository.save(user);
 	}
@@ -52,13 +51,13 @@ public class UserServiceImpl implements UserService {
 		// Check if the mobile number has been verified
 		if (!isMobileNumberVerified(user.getMobileNumber())) {
 			throw new OTPException(
-				"OTP_NOT_VERIFIED", 
-				"Mobile number has not been verified. Please complete OTP verification before registration.", 
-				HttpStatus.BAD_REQUEST
+				"Mobile number " + user.getMobileNumber() + " has not been verified through OTP",
+				"MOBILE_NOT_VERIFIED",
+				HttpStatus.UNAUTHORIZED
 			);
 		}
 		
-		// Set the verification status to true
+		// Set the mobile verification status to true
 		user.setMobileVerificationStatus(true);
 		
 		// Save the user
@@ -73,11 +72,7 @@ public class UserServiceImpl implements UserService {
 	 */
 	@Override
 	public boolean isMobileNumberVerified(String mobileNumber) {
-		if (mobileNumber == null || mobileNumber.isEmpty()) {
-			return false;
-		}
-		
-		// Delegate to OTP service to check verification status
+		// Check if the mobile number has been verified using the OTP service
 		return otpService.checkMobileVerified(mobileNumber);
 	}
 	
@@ -92,23 +87,19 @@ public class UserServiceImpl implements UserService {
 	@Override
 	@Transactional
 	public boolean updateMobileVerificationStatus(String mobileNumber, boolean verified) {
-		try {
-			// Find users with this mobile number
-			User user = repository.findByMobileNumber(mobileNumber);
-			
-			// If user exists, update verification status
-			if (user != null) {
+		// Since we don't have a direct findByMobileNumber method in the repository,
+		// we need to find all users and filter manually
+		// This is not efficient for production but works for this demo
+		for (User user : repository.findAll()) {
+			if (user.getMobileNumber() != null && user.getMobileNumber().equals(mobileNumber)) {
 				user.setMobileVerificationStatus(verified);
 				repository.save(user);
 				return true;
 			}
-			
-			// No user found with this mobile number
-			return false;
-		} catch (Exception e) {
-			// Log the exception
-			System.err.println("Error updating mobile verification status: " + e.getMessage());
-			return false;
 		}
+		
+		// If user doesn't exist yet, we'll consider this a pre-verification
+		// The status will be set when the user is created
+		return false;
 	}
 }
