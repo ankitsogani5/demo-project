@@ -1,85 +1,109 @@
 package com.zensar.ankit.demo.repository;
 
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
-import org.springframework.transaction.annotation.Transactional;
 
 import com.zensar.ankit.demo.entity.OTP;
 
-import java.util.List;
-import java.util.Optional;
-
 /**
  * Repository interface for managing OTP entities.
- * Extends JpaRepository to inherit standard CRUD operations.
- * Provides custom query methods for OTP management and verification.
+ * Provides methods for finding OTPs by mobile number, retrieving the latest valid OTP,
+ * updating verification status, and batch deletion of expired OTPs.
  */
 @Repository
 public interface OTPRepository extends JpaRepository<OTP, Long> {
     
     /**
-     * Finds all OTP records for a specific mobile number.
+     * Finds all OTP records for a specific mobile number
      * 
-     * @param mobileNumber The mobile number to search for
-     * @return List of OTP entities associated with the mobile number
+     * @param userMobileNumber the mobile number to search for
+     * @return list of OTP records associated with the mobile number
      */
-    List<OTP> findByUserMobileNumber(String mobileNumber);
+    List<OTP> findByUserMobileNumber(String userMobileNumber);
     
     /**
-     * Finds the latest valid (not expired and pending verification) OTP for a mobile number.
+     * Finds the latest valid (non-expired, pending) OTP for a mobile number
      * 
-     * @param mobileNumber The mobile number to search for
+     * @param userMobileNumber the mobile number to search for
+     * @param currentTime the current time to check against expiration
      * @return Optional containing the latest valid OTP if found, empty otherwise
      */
-    @Query("SELECT o FROM OTP o WHERE o.userMobileNumber = :mobileNumber AND o.verificationStatus = 'PENDING' AND o.expirationTimestamp > CURRENT_TIMESTAMP ORDER BY o.creationTimestamp DESC")
-    Optional<OTP> findLatestValidOtpForMobile(@Param("mobileNumber") String mobileNumber);
+    @Query("SELECT o FROM OTP o WHERE o.userMobileNumber = :userMobileNumber AND o.verificationStatus = 'PENDING' AND o.expirationTimestamp > :currentTime ORDER BY o.creationTimestamp DESC")
+    Optional<OTP> findLatestValidOtpForMobile(@Param("userMobileNumber") String userMobileNumber, @Param("currentTime") LocalDateTime currentTime);
     
     /**
-     * Updates the verification status of an OTP record.
+     * Updates the verification status of an OTP
      * 
-     * @param otpId The ID of the OTP record to update
-     * @param status The new verification status
-     * @param attempts The updated number of verification attempts
-     * @return Number of records updated (should be 1 if successful)
+     * @param id the ID of the OTP to update
+     * @param status the new verification status
+     * @return the number of records updated
      */
     @Modifying
-    @Transactional
-    @Query("UPDATE OTP o SET o.verificationStatus = :status, o.verificationAttempts = :attempts WHERE o.id = :otpId")
-    int updateVerificationStatus(@Param("otpId") Long otpId, @Param("status") String status, @Param("attempts") int attempts);
+    @Query("UPDATE OTP o SET o.verificationStatus = :status WHERE o.id = :id")
+    int updateVerificationStatus(@Param("id") Long id, @Param("status") String status);
     
     /**
-     * Batch deletes all expired OTP records.
+     * Batch deletes expired OTP records
      * 
-     * @param cutoffTime The timestamp before which OTPs are considered expired
-     * @return Number of records deleted
+     * @param cutoffTime the time threshold for expiration
+     * @return the number of records deleted
      */
     @Modifying
-    @Transactional
     @Query("DELETE FROM OTP o WHERE o.expirationTimestamp < :cutoffTime")
     int batchDeleteExpiredOtps(@Param("cutoffTime") LocalDateTime cutoffTime);
     
     /**
-     * Counts the number of OTP generation attempts for a mobile number within a time window.
-     * Used for rate limiting to prevent abuse.
+     * Finds OTP records with a specific verification status
      * 
-     * @param mobileNumber The mobile number to check
-     * @param startTime The start of the time window
-     * @return Count of OTP records created within the time window
-     */
-    @Query("SELECT COUNT(o) FROM OTP o WHERE o.userMobileNumber = :mobileNumber AND o.creationTimestamp > :startTime")
-    int countRecentOtpsForMobile(@Param("mobileNumber") String mobileNumber, @Param("startTime") LocalDateTime startTime);
-    
-    /**
-     * Finds all OTPs with a specific verification status.
-     * Useful for auditing and monitoring purposes.
-     * 
-     * @param status The verification status to search for
-     * @return List of OTP entities with the specified status
+     * @param status the verification status to search for
+     * @return list of OTP records with the specified status
      */
     List<OTP> findByVerificationStatus(String status);
+    
+    /**
+     * Finds OTP records for a mobile number with a specific verification status
+     * 
+     * @param userMobileNumber the mobile number to search for
+     * @param status the verification status to search for
+     * @return list of OTP records matching both criteria
+     */
+    List<OTP> findByUserMobileNumberAndVerificationStatus(String userMobileNumber, String status);
+    
+    /**
+     * Counts the number of OTP generation attempts for a mobile number within a time period
+     * Used for rate limiting and abuse prevention
+     * 
+     * @param userMobileNumber the mobile number to check
+     * @param startTime the start of the time window
+     * @return count of OTP records created in the time window
+     */
+    @Query("SELECT COUNT(o) FROM OTP o WHERE o.userMobileNumber = :userMobileNumber AND o.creationTimestamp > :startTime")
+    long countRecentOtpsForMobile(@Param("userMobileNumber") String userMobileNumber, @Param("startTime") LocalDateTime startTime);
+    
+    /**
+     * Finds all expired OTP records that haven't been marked as expired yet
+     * 
+     * @param currentTime the current time to check against expiration
+     * @return list of expired OTP records still marked as PENDING
+     */
+    @Query("SELECT o FROM OTP o WHERE o.expirationTimestamp < :currentTime AND o.verificationStatus = 'PENDING'")
+    List<OTP> findExpiredPendingOtps(@Param("currentTime") LocalDateTime currentTime);
+    
+    /**
+     * Deletes all OTP records for a specific mobile number
+     * Used when a user is deleted or for privacy compliance
+     * 
+     * @param userMobileNumber the mobile number whose OTP records should be deleted
+     * @return the number of records deleted
+     */
+    @Modifying
+    @Query("DELETE FROM OTP o WHERE o.userMobileNumber = :userMobileNumber")
+    int deleteAllByUserMobileNumber(@Param("userMobileNumber") String userMobileNumber);
 }
