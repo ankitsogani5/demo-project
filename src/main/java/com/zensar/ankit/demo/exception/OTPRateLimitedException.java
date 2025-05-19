@@ -3,98 +3,127 @@ package com.zensar.ankit.demo.exception;
 import org.springframework.http.HttpStatus;
 
 /**
- * Exception thrown when too many OTP requests are made for a mobile number within a specific time period.
- * This exception is used to prevent abuse of the OTP generation system by limiting the number of
- * OTP requests to 5 per mobile number per hour.
- *
- * @see com.zensar.ankit.demo.advice.CustomExceptionHandler
+ * Exception thrown when too many OTP requests are made for a mobile number within a specific time period (typically 5 requests per hour).
+ * This exception is used to prevent abuse of the OTP generation system.
+ * It returns HTTP status code 429 (Too Many Requests) and includes a specific error code.
  */
-public class OTPRateLimitedException extends RuntimeException {
+public class OTPRateLimitedException extends OTPException {
 
     private static final long serialVersionUID = 1L;
     
     /**
-     * The HTTP status code to be returned (429 Too Many Requests)
+     * Standardized error code for rate limiting scenario.
      */
-    private final HttpStatus status = HttpStatus.TOO_MANY_REQUESTS;
+    public static final String ERROR_CODE = "OTP_RATE_LIMITED";
     
     /**
-     * The error code for this exception
+     * HTTP status code to be returned (429 Too Many Requests)
      */
-    private final String errorCode = "OTP_RATE_LIMITED";
+    private static final HttpStatus HTTP_STATUS = HttpStatus.TOO_MANY_REQUESTS;
     
     /**
-     * Constructs a new OTPRateLimitedException with the default message.
+     * Default error message for rate limiting scenario.
+     */
+    private static final String DEFAULT_MESSAGE = "Rate limit exceeded. Too many OTP requests for this mobile number.";
+    
+    /**
+     * Default suggested action for rate limiting scenario.
+     */
+    private static final String SUGGESTED_ACTION = "Please wait before requesting another OTP.";
+    
+    /**
+     * Number of seconds after which the client can retry requesting an OTP.
+     */
+    private final int retryAfterSeconds;
+
+    /**
+     * Constructs a new OTPRateLimitedException with the default message and a default retry period of 1 hour (3600 seconds).
      */
     public OTPRateLimitedException() {
-        super("Rate limit exceeded. Maximum 5 OTP requests allowed per mobile number per hour.");
+        this(DEFAULT_MESSAGE, 3600); // Default 1 hour (3600 seconds) retry period
     }
-    
+
     /**
-     * Constructs a new OTPRateLimitedException with the specified message.
-     *
-     * @param message the detail message
+     * Constructs a new OTPRateLimitedException with the default message and specified retry period.
+     * 
+     * @param retryAfterSeconds The number of seconds after which the client can retry
+     */
+    public OTPRateLimitedException(int retryAfterSeconds) {
+        this(DEFAULT_MESSAGE, retryAfterSeconds);
+    }
+
+    /**
+     * Constructs a new OTPRateLimitedException with a custom message and default retry period.
+     * 
+     * @param message The custom error message
      */
     public OTPRateLimitedException(String message) {
-        super(message);
+        this(message, 3600); // Default 1 hour (3600 seconds) retry period
     }
-    
+
     /**
-     * Constructs a new OTPRateLimitedException with the specified message and cause.
-     *
-     * @param message the detail message
-     * @param cause the cause of the exception
+     * Constructs a new OTPRateLimitedException with a custom message and specified retry period.
+     * 
+     * @param message The custom error message
+     * @param retryAfterSeconds The number of seconds after which the client can retry
+     */
+    public OTPRateLimitedException(String message, int retryAfterSeconds) {
+        super(ERROR_CODE, message, HTTP_STATUS);
+        this.retryAfterSeconds = retryAfterSeconds;
+    }
+
+    /**
+     * Constructs a new OTPRateLimitedException with a custom message, cause, and default retry period.
+     * 
+     * @param message The custom error message
+     * @param cause The cause of the exception
      */
     public OTPRateLimitedException(String message, Throwable cause) {
-        super(message, cause);
+        this(message, cause, 3600); // Default 1 hour (3600 seconds) retry period
     }
-    
+
     /**
-     * Constructs a new OTPRateLimitedException with the specified cause.
-     *
-     * @param cause the cause of the exception
+     * Constructs a new OTPRateLimitedException with a custom message, cause, and specified retry period.
+     * 
+     * @param message The custom error message
+     * @param cause The cause of the exception
+     * @param retryAfterSeconds The number of seconds after which the client can retry
      */
-    public OTPRateLimitedException(Throwable cause) {
-        super("Rate limit exceeded. Maximum 5 OTP requests allowed per mobile number per hour.", cause);
+    public OTPRateLimitedException(String message, Throwable cause, int retryAfterSeconds) {
+        super(ERROR_CODE, message, HTTP_STATUS, cause);
+        this.retryAfterSeconds = retryAfterSeconds;
     }
-    
+
     /**
-     * Returns the HTTP status code associated with this exception.
+     * Constructs a new OTPRateLimitedException with the default message and the specified mobile number.
      *
-     * @return the HTTP status code (429 Too Many Requests)
+     * @param mobileNumber the mobile number that has been rate limited
+     * @param retryAfterSeconds The number of seconds after which the client can retry
+     * @return a new OTPRateLimitedException with a message including the mobile number
      */
-    public HttpStatus getStatus() {
-        return status;
+    public static OTPRateLimitedException forMobileNumber(String mobileNumber, int retryAfterSeconds) {
+        return new OTPRateLimitedException(
+            "Rate limit exceeded for mobile number: " + mobileNumber + ". " + SUGGESTED_ACTION, 
+            retryAfterSeconds
+        );
     }
-    
+
     /**
-     * Returns the error code associated with this exception.
-     *
-     * @return the error code (OTP_RATE_LIMITED)
+     * Gets the number of seconds after which the client can retry requesting an OTP.
+     * This value should be used to set the Retry-After HTTP header in the response.
+     * 
+     * @return The retry after period in seconds
      */
-    public String getErrorCode() {
-        return errorCode;
+    public int getRetryAfterSeconds() {
+        return retryAfterSeconds;
     }
     
     /**
-     * Returns a suggested action to resolve this exception.
+     * Gets the suggested action for this exception.
      *
-     * @return a string containing the suggested action
+     * @return the suggested action to resolve the issue
      */
     public String getSuggestedAction() {
-        return "Please wait for the cooldown period to expire before requesting another OTP.";
-    }
-    
-    /**
-     * Returns the remaining time in minutes before a new OTP request can be made.
-     * This is a placeholder method that should be implemented with actual time calculation.
-     *
-     * @param mobileNumber the mobile number for which to check the remaining time
-     * @return the remaining time in minutes
-     */
-    public int getRemainingCooldownMinutes(String mobileNumber) {
-        // This would be implemented to calculate the actual remaining time
-        // based on the last request timestamp for the given mobile number
-        return 60; // Default to maximum wait time
+        return SUGGESTED_ACTION + " Try again after " + retryAfterSeconds + " seconds.";
     }
 }
