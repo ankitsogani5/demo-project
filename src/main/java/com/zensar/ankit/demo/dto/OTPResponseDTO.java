@@ -1,5 +1,7 @@
 package com.zensar.ankit.demo.dto;
 
+import java.time.LocalDateTime;
+
 import io.swagger.annotations.ApiModel;
 import io.swagger.annotations.ApiModelProperty;
 
@@ -13,30 +15,35 @@ public class OTPResponseDTO {
 
     @ApiModelProperty(notes = "Unique identifier for the OTP verification session", required = true, example = "a1b2c3d4-e5f6-7890")
     private String requestId;
-
-    @ApiModelProperty(notes = "Status of the OTP delivery (SUCCESS, PENDING, FAILED)", required = true, example = "SUCCESS")
+    
+    @ApiModelProperty(notes = "Status of the OTP delivery", required = true, example = "SUCCESS")
     private String status;
-
+    
     @ApiModelProperty(notes = "Additional information or error message", example = "OTP sent successfully to your mobile number")
     private String message;
+    
+    @ApiModelProperty(notes = "Timestamp of the OTP generation", required = true)
+    private LocalDateTime timestamp;
 
     /**
      * Default constructor
      */
     public OTPResponseDTO() {
+        this.timestamp = LocalDateTime.now();
     }
 
     /**
      * Constructor with all fields
      * 
      * @param requestId Unique identifier for the OTP verification session
-     * @param status Status of the OTP delivery
+     * @param status Status of the OTP delivery (SUCCESS, FAILED)
      * @param message Additional information or error message
      */
     public OTPResponseDTO(String requestId, String status, String message) {
         this.requestId = requestId;
         this.status = status;
         this.message = message;
+        this.timestamp = LocalDateTime.now();
     }
 
     /**
@@ -81,8 +88,23 @@ public class OTPResponseDTO {
         this.message = message;
     }
 
+    /**
+     * @return the timestamp
+     */
+    public LocalDateTime getTimestamp() {
+        return timestamp;
+    }
+
+    /**
+     * @param timestamp the timestamp to set
+     */
+    public void setTimestamp(LocalDateTime timestamp) {
+        this.timestamp = timestamp;
+    }
+
     @Override
     public String toString() {
-        return "OTPResponseDTO [requestId=" + requestId + ", status=" + status + ", message=" + message + "]";
+        return "OTPResponseDTO [requestId=" + requestId + ", status=" + status + ", message=" + message
+                + ", timestamp=" + timestamp + "]";
     }
 }
