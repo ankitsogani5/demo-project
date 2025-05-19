@@ -1,40 +1,41 @@
 package com.zensar.ankit.demo.service;
 
-import java.time.LocalDateTime;
+import com.zensar.ankit.demo.dto.OTPResponseDTO;
+import com.zensar.ankit.demo.exception.OTPException;
 
 /**
  * Service interface for OTP (One-Time Password) generation, verification, and management.
- * This service is responsible for creating time-limited OTP codes, verifying submitted codes,
- * and checking verification status for mobile numbers during the user registration process.
+ * This service is responsible for handling all aspects of the mobile verification process
+ * including generating OTPs, sending them via SMS, verifying submitted codes, and tracking
+ * verification status.
  */
 public interface OTPService {
     
     /**
-     * Generates a new 6-digit OTP for the specified mobile number and sends it via SMS.
-     * The generated OTP is valid for 10 minutes from creation time.
+     * Generates a new OTP for the specified mobile number and sends it via SMS.
+     * If an existing OTP is still valid, it will be invalidated before generating a new one.
      * 
-     * @param mobileNumber The mobile number to send the OTP to (must be a valid 10-digit number)
-     * @return A reference ID that can be used to track this OTP verification request
-     * @throws IllegalArgumentException if the mobile number format is invalid
-     * @throws RuntimeException if OTP generation or SMS delivery fails
+     * @param mobileNumber The mobile number to send the OTP to (must be 10 digits)
+     * @return OTPResponseDTO containing the reference ID and expiration time
+     * @throws OTPException if OTP generation or SMS sending fails
      */
-    String generateOTP(String mobileNumber);
+    OTPResponseDTO generateOTP(String mobileNumber) throws OTPException;
     
     /**
      * Verifies the submitted OTP code against the stored OTP for the given mobile number.
-     * Verification fails if the OTP is incorrect, expired, or maximum attempts are exceeded.
+     * This method checks if the OTP is valid, not expired, and matches the stored code.
+     * It also tracks verification attempts and handles maximum attempt limits.
      * 
      * @param mobileNumber The mobile number associated with the OTP
-     * @param otpCode The 6-digit OTP code submitted by the user
+     * @param otpCode The OTP code submitted by the user
      * @return true if verification is successful, false otherwise
-     * @throws IllegalArgumentException if the mobile number or OTP format is invalid
-     * @throws RuntimeException if verification process encounters an error
+     * @throws OTPException if verification fails due to invalid code, expiration, or max attempts
      */
-    boolean verifyOTP(String mobileNumber, String otpCode);
+    boolean verifyOTP(String mobileNumber, String otpCode) throws OTPException;
     
     /**
      * Checks if a mobile number has been successfully verified through the OTP process.
-     * This method is used during user registration to ensure mobile verification is complete.
+     * This is used to determine if a user can proceed with registration or other protected actions.
      * 
      * @param mobileNumber The mobile number to check verification status for
      * @return true if the mobile number has been verified, false otherwise
@@ -42,37 +43,37 @@ public interface OTPService {
     boolean checkMobileVerified(String mobileNumber);
     
     /**
-     * Retrieves the remaining verification attempts for the latest OTP sent to a mobile number.
-     * The system allows a maximum of 3 verification attempts per OTP.
+     * Invalidates any existing OTPs for the specified mobile number.
+     * This is typically used when a user requests a new OTP or when maximum verification
+     * attempts have been reached.
      * 
-     * @param mobileNumber The mobile number to check remaining attempts for
-     * @return The number of remaining verification attempts (0-3), or 0 if no valid OTP exists
-     */
-    int getRemainingAttempts(String mobileNumber);
-    
-    /**
-     * Checks if the OTP for a given mobile number has expired.
-     * OTPs are valid for 10 minutes from the time of generation.
-     * 
-     * @param mobileNumber The mobile number to check OTP expiration for
-     * @return true if the OTP has expired or doesn't exist, false if it's still valid
-     */
-    boolean isOTPExpired(String mobileNumber);
-    
-    /**
-     * Retrieves the expiration time for the latest OTP sent to a mobile number.
-     * 
-     * @param mobileNumber The mobile number to get OTP expiration time for
-     * @return The expiration timestamp, or null if no valid OTP exists
-     */
-    LocalDateTime getOTPExpirationTime(String mobileNumber);
-    
-    /**
-     * Invalidates any existing OTP for the given mobile number.
-     * This is useful when a user requests a new OTP before the old one expires.
-     * 
-     * @param mobileNumber The mobile number to invalidate OTPs for
-     * @return true if an OTP was invalidated, false if no valid OTP existed
+     * @param mobileNumber The mobile number for which to invalidate OTPs
+     * @return true if OTPs were successfully invalidated, false if no OTPs were found
      */
     boolean invalidateOTP(String mobileNumber);
+    
+    /**
+     * Returns the configured OTP expiration time in minutes.
+     * This is used for informational purposes to let users know how long they have to verify.
+     * 
+     * @return The OTP expiration time in minutes
+     */
+    int getOTPExpirationTime();
+    
+    /**
+     * Returns the maximum number of verification attempts allowed for an OTP.
+     * After this limit is reached, the OTP is invalidated and a new one must be generated.
+     * 
+     * @return The maximum number of verification attempts allowed
+     */
+    int getMaxVerificationAttempts();
+    
+    /**
+     * Returns the remaining verification attempts for the given mobile number.
+     * This is used to inform users how many attempts they have left before the OTP is invalidated.
+     * 
+     * @param mobileNumber The mobile number to check remaining attempts for
+     * @return The number of remaining verification attempts, or 0 if no valid OTP exists
+     */
+    int getRemainingVerificationAttempts(String mobileNumber);
 }
