@@ -12,122 +12,51 @@ public class OTPException extends RuntimeException {
 
     private static final long serialVersionUID = 1L;
     
-    /**
-     * Standardized error code for OTP verification failures.
-     * Possible values include:
-     * - OTP_EXPIRED: OTP has exceeded its TTL
-     * - OTP_INVALID: Incorrect OTP provided
-     * - OTP_ATTEMPTS_EXCEEDED: Maximum verification attempts reached
-     * - OTP_ALREADY_VERIFIED: OTP has already been successfully verified
-     * - OTP_GENERATION_FAILED: System failed to generate OTP
-     * - OTP_DELIVERY_FAILURE: SMS delivery service unavailable
-     * - OTP_RATE_LIMITED: Too many OTP requests in time period
-     */
     private final String errorCode;
+    private final HttpStatus httpStatus;
     
     /**
-     * HTTP status code to be returned in the response.
-     * Common values for OTP exceptions:
-     * - 400 Bad Request (OTP_EXPIRED, OTP_INVALID, OTP_ALREADY_VERIFIED)
-     * - 429 Too Many Requests (OTP_ATTEMPTS_EXCEEDED, OTP_RATE_LIMITED)
-     * - 500 Internal Server Error (OTP_GENERATION_FAILED)
-     * - 503 Service Unavailable (OTP_DELIVERY_FAILURE)
+     * Constructs a new OTPException with the specified detail message, error code, and HTTP status.
+     * 
+     * @param message The detail message
+     * @param errorCode The error code that identifies the specific error type
+     * @param httpStatus The HTTP status code to be returned in the response
      */
-    private final HttpStatus status;
+    public OTPException(String message, String errorCode, HttpStatus httpStatus) {
+        super(message);
+        this.errorCode = errorCode;
+        this.httpStatus = httpStatus;
+    }
     
     /**
-     * Additional details about the exception that can be included in the response.
-     * This may include information such as:
-     * - Remaining attempts allowed
-     * - Time until next attempt is allowed
-     * - Suggested user action
+     * Constructs a new OTPException with the specified detail message, error code, HTTP status, and cause.
+     * 
+     * @param message The detail message
+     * @param errorCode The error code that identifies the specific error type
+     * @param httpStatus The HTTP status code to be returned in the response
+     * @param cause The cause of the exception
      */
-    private final Object details;
-
-    /**
-     * Constructs a new OTP exception with the specified error code, message, and HTTP status.
-     *
-     * @param errorCode standardized error code for the exception
-     * @param message detailed error message
-     * @param status HTTP status code to be returned in the response
-     */
-    public OTPException(String errorCode, String message, HttpStatus status) {
-        super(message);
-        this.errorCode = errorCode;
-        this.status = status;
-        this.details = null;
-    }
-
-    /**
-     * Constructs a new OTP exception with the specified error code, message, HTTP status, and additional details.
-     *
-     * @param errorCode standardized error code for the exception
-     * @param message detailed error message
-     * @param status HTTP status code to be returned in the response
-     * @param details additional information about the exception
-     */
-    public OTPException(String errorCode, String message, HttpStatus status, Object details) {
-        super(message);
-        this.errorCode = errorCode;
-        this.status = status;
-        this.details = details;
-    }
-
-    /**
-     * Constructs a new OTP exception with the specified error code, message, HTTP status, and cause.
-     *
-     * @param errorCode standardized error code for the exception
-     * @param message detailed error message
-     * @param status HTTP status code to be returned in the response
-     * @param cause the cause of this exception
-     */
-    public OTPException(String errorCode, String message, HttpStatus status, Throwable cause) {
+    public OTPException(String message, String errorCode, HttpStatus httpStatus, Throwable cause) {
         super(message, cause);
         this.errorCode = errorCode;
-        this.status = status;
-        this.details = null;
+        this.httpStatus = httpStatus;
     }
-
+    
     /**
-     * Constructs a new OTP exception with the specified error code, message, HTTP status, additional details, and cause.
-     *
-     * @param errorCode standardized error code for the exception
-     * @param message detailed error message
-     * @param status HTTP status code to be returned in the response
-     * @param details additional information about the exception
-     * @param cause the cause of this exception
-     */
-    public OTPException(String errorCode, String message, HttpStatus status, Object details, Throwable cause) {
-        super(message, cause);
-        this.errorCode = errorCode;
-        this.status = status;
-        this.details = details;
-    }
-
-    /**
-     * Gets the standardized error code for this exception.
-     *
-     * @return the error code
+     * Returns the error code associated with this exception.
+     * 
+     * @return The error code
      */
     public String getErrorCode() {
         return errorCode;
     }
-
+    
     /**
-     * Gets the HTTP status code to be returned in the response.
-     *
-     * @return the HTTP status
+     * Returns the HTTP status code associated with this exception.
+     * 
+     * @return The HTTP status code
      */
-    public HttpStatus getStatus() {
-        return status;
-    }
-
-    /**
-     * Gets additional details about the exception.
-     *
-     * @return additional details, or null if none
-     */
-    public Object getDetails() {
-        return details;
+    public HttpStatus getHttpStatus() {
+        return httpStatus;
     }
 }
