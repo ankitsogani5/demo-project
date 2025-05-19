@@ -4,68 +4,69 @@ import org.springframework.http.HttpStatus;
 
 /**
  * Exception thrown when no OTP record is found for a given mobile number or reference ID during verification.
- * This exception indicates that the OTP being verified does not exist in the system.
+ * This exception is used to indicate that the OTP being verified does not exist in the system.
  */
 public class OTPNotFoundException extends OTPException {
 
     private static final long serialVersionUID = 1L;
-    private static final String ERROR_CODE = "OTP_NOT_FOUND";
-    private static final HttpStatus HTTP_STATUS = HttpStatus.NOT_FOUND;
-    private static final String DEFAULT_MESSAGE = "No OTP found for the provided mobile number or reference ID";
-    private static final String SUGGESTED_ACTION = "Please generate a new OTP and try again";
+    
+    /**
+     * Standardized error code for OTP not found scenario.
+     */
+    public static final String ERROR_CODE = "OTP_NOT_FOUND";
+    
+    /**
+     * Default error message for OTP not found scenario.
+     */
+    private static final String DEFAULT_MESSAGE = "No OTP found for the provided reference. Please generate a new OTP.";
 
     /**
-     * Constructs a new OTPNotFoundException with the default message.
+     * Constructs a new OTPNotFoundException with the default message and HTTP status 404 Not Found.
      */
     public OTPNotFoundException() {
-        super(DEFAULT_MESSAGE, ERROR_CODE, HTTP_STATUS);
+        super(ERROR_CODE, DEFAULT_MESSAGE, HttpStatus.NOT_FOUND);
     }
 
     /**
-     * Constructs a new OTPNotFoundException with the specified message.
+     * Constructs a new OTPNotFoundException with a custom message and HTTP status 404 Not Found.
      *
-     * @param message the detail message
+     * @param message detailed error message
      */
     public OTPNotFoundException(String message) {
-        super(message, ERROR_CODE, HTTP_STATUS);
+        super(ERROR_CODE, message, HttpStatus.NOT_FOUND);
     }
 
     /**
-     * Constructs a new OTPNotFoundException with the specified message and cause.
+     * Constructs a new OTPNotFoundException with a custom message, HTTP status 404 Not Found,
+     * and additional details.
      *
-     * @param message the detail message
-     * @param cause the cause of the exception
+     * @param message detailed error message
+     * @param details additional information about the exception
+     */
+    public OTPNotFoundException(String message, Object details) {
+        super(ERROR_CODE, message, HttpStatus.NOT_FOUND, details);
+    }
+
+    /**
+     * Constructs a new OTPNotFoundException with a custom message, HTTP status 404 Not Found,
+     * and the cause of the exception.
+     *
+     * @param message detailed error message
+     * @param cause the cause of this exception
      */
     public OTPNotFoundException(String message, Throwable cause) {
-        super(message, cause, ERROR_CODE, HTTP_STATUS);
+        super(ERROR_CODE, message, HttpStatus.NOT_FOUND, cause);
     }
 
     /**
-     * Constructs a new OTPNotFoundException with the default message and the specified mobile number.
+     * Constructs a new OTPNotFoundException with a custom message, HTTP status 404 Not Found,
+     * additional details, and the cause of the exception.
      *
-     * @param mobileNumber the mobile number for which no OTP was found
-     * @return a new OTPNotFoundException with a message including the mobile number
+     * @param message detailed error message
+     * @param details additional information about the exception
+     * @param cause the cause of this exception
      */
-    public static OTPNotFoundException forMobileNumber(String mobileNumber) {
-        return new OTPNotFoundException("No OTP found for mobile number: " + mobileNumber + ". " + SUGGESTED_ACTION);
-    }
-
-    /**
-     * Constructs a new OTPNotFoundException with the default message and the specified reference ID.
-     *
-     * @param referenceId the reference ID for which no OTP was found
-     * @return a new OTPNotFoundException with a message including the reference ID
-     */
-    public static OTPNotFoundException forReferenceId(String referenceId) {
-        return new OTPNotFoundException("No OTP found for reference ID: " + referenceId + ". " + SUGGESTED_ACTION);
-    }
-
-    /**
-     * Returns the suggested action for this exception.
-     *
-     * @return the suggested action to resolve the issue
-     */
-    public String getSuggestedAction() {
-        return SUGGESTED_ACTION;
+    public OTPNotFoundException(String message, Object details, Throwable cause) {
+        super(ERROR_CODE, message, HttpStatus.NOT_FOUND, details, cause);
     }
 }
