@@ -1,0 +1,546 @@
+# GitHub Actions workflow for deploying the Java 22 microservice to AWS EC2
+# This workflow implements blue-green deployment for zero-downtime updates,
+# environment promotion (Dev → Staging → Production), automatic rollback on failure,
+# health checks, and versioning via GitHub Releases.
+
+name: Deploy to AWS EC2
+
+on:
+  workflow_run:
+    workflows: ["Build and Test"]
+    types:
+      - completed
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+
+# Environment variables used across jobs
+env:
+  JAVA_VERSION: '22'
+  JAVA_DISTRIBUTION: 'temurin'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
+    outputs:
+      version: ${{ steps.set-version.outputs.version }}
+      environment: ${{ steps.set-environment.outputs.environment }}
+    steps:
+      - name: Set version
+        id: set-version
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Set environment
+        id: set-environment
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Log deployment preparation
+        run: |
+          echo "Preparing deployment with the following parameters:"
+          echo "- Java Version: $JAVA_VERSION"
+          echo "- Event Type: ${{ github.event_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            echo "- Triggered by: Build and Test workflow"
+          elif [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "- Release Tag: ${{ github.event.release.tag_name }}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "- Manual trigger for environment: ${{ github.event.inputs.environment }}"
+          fi
+
+  deploy-dev:
+    needs: prepare
+    if: needs.prepare.outputs.environment == 'dev'
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up JDK 22
+        uses: actions/setup-java@v3
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+      
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: demo-app
+          path: target/
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      - name: Deploy to Dev EC2
+        id: deploy
+        env:
+          EC2_HOST: ${{ secrets.DEV_EC2_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          # Setup SSH
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/private_key
+          chmod 600 ~/.ssh/private_key
+          
+          # Create deployment directory structure for blue-green deployment
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "mkdir -p /opt/demo/releases/$APP_VERSION"
+          
+          # Upload JAR file
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/private_key \
+            target/demo-*.jar ec2-user@$EC2_HOST:/opt/demo/releases/$APP_VERSION/demo.jar
+          
+          # Upload application properties for dev environment
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/private_key \
+            src/main/resources/application-dev.properties ec2-user@$EC2_HOST:/opt/demo/releases/$APP_VERSION/application.properties
+          
+          # Execute blue-green deployment script
+          # This script will:
+          # 1. Start the new version on a different port
+          # 2. Verify it's running correctly
+          # 3. Switch traffic to the new version
+          # 4. Shut down the old version
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "cd /opt/demo && ./deploy.sh $APP_VERSION dev"
+          
+          # Store the deployment result
+          DEPLOY_RESULT=$?
+          if [ $DEPLOY_RESULT -ne 0 ]; then
+            echo "Deployment failed, initiating rollback"
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+              "cd /opt/demo && ./rollback.sh dev"
+            exit 1
+          fi
+      
+      - name: Verify Health Check
+        env:
+          EC2_HOST: ${{ secrets.DEV_EC2_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          # Wait for application to start
+          sleep 10
+          
+          # Perform health check
+          HEALTH_CHECK_URL="http://$EC2_HOST:8080/actuator/health"
+          MAX_RETRIES=12
+          RETRY_INTERVAL=5
+          
+          for i in $(seq 1 $MAX_RETRIES); do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $HEALTH_CHECK_URL)
+            if [ $HTTP_STATUS -eq 200 ]; then
+              echo "Health check passed!"
+              
+              # Additional Java 22 specific checks
+              # Verify the application is running on Java 22
+              JAVA_VERSION=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+                "ps -ef | grep java | grep demo.jar | grep -o 'java-22' || echo 'not-found'")
+              
+              if [[ $JAVA_VERSION == *"java-22"* ]]; then
+                echo "Java 22 verification passed!"
+                exit 0
+              else
+                echo "Java 22 verification failed! Application might be running on wrong Java version."
+                ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+                  "cd /opt/demo && ./rollback.sh dev"
+                exit 1
+              fi
+            fi
+            echo "Health check attempt $i failed with status $HTTP_STATUS. Retrying in $RETRY_INTERVAL seconds..."
+            sleep $RETRY_INTERVAL
+          done
+          
+          echo "Health check failed after $MAX_RETRIES attempts. Initiating rollback."
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "cd /opt/demo && ./rollback.sh dev"
+          exit 1
+
+  deploy-staging:
+    needs: prepare
+    if: needs.prepare.outputs.environment == 'staging'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up JDK 22
+        uses: actions/setup-java@v3
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+      
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: demo-app
+          path: target/
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      - name: Deploy to Staging EC2
+        id: deploy
+        env:
+          EC2_HOST: ${{ secrets.STAGING_EC2_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          # Setup SSH
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/private_key
+          chmod 600 ~/.ssh/private_key
+          
+          # Create deployment directory structure for blue-green deployment
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "mkdir -p /opt/demo/releases/$APP_VERSION"
+          
+          # Upload JAR file
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/private_key \
+            target/demo-*.jar ec2-user@$EC2_HOST:/opt/demo/releases/$APP_VERSION/demo.jar
+          
+          # Upload application properties for staging environment
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/private_key \
+            src/main/resources/application-staging.properties ec2-user@$EC2_HOST:/opt/demo/releases/$APP_VERSION/application.properties
+          
+          # Execute blue-green deployment script
+          # This script will:
+          # 1. Start the new version on a different port
+          # 2. Verify it's running correctly
+          # 3. Switch traffic to the new version
+          # 4. Shut down the old version
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "cd /opt/demo && ./deploy.sh $APP_VERSION staging"
+          
+          # Store the deployment result
+          DEPLOY_RESULT=$?
+          if [ $DEPLOY_RESULT -ne 0 ]; then
+            echo "Deployment failed, initiating rollback"
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+              "cd /opt/demo && ./rollback.sh staging"
+            exit 1
+          fi
+      
+      - name: Verify Health Check
+        env:
+          EC2_HOST: ${{ secrets.STAGING_EC2_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          # Wait for application to start
+          sleep 10
+          
+          # Perform health check
+          HEALTH_CHECK_URL="http://$EC2_HOST:8080/actuator/health"
+          MAX_RETRIES=12
+          RETRY_INTERVAL=5
+          
+          for i in $(seq 1 $MAX_RETRIES); do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $HEALTH_CHECK_URL)
+            if [ $HTTP_STATUS -eq 200 ]; then
+              echo "Health check passed!"
+              
+              # Additional Java 22 specific checks
+              # Verify the application is running on Java 22
+              JAVA_VERSION=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+                "ps -ef | grep java | grep demo.jar | grep -o 'java-22' || echo 'not-found'")
+              
+              if [[ $JAVA_VERSION == *"java-22"* ]]; then
+                echo "Java 22 verification passed!"
+                exit 0
+              else
+                echo "Java 22 verification failed! Application might be running on wrong Java version."
+                ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+                  "cd /opt/demo && ./rollback.sh staging"
+                exit 1
+              fi
+            fi
+            echo "Health check attempt $i failed with status $HTTP_STATUS. Retrying in $RETRY_INTERVAL seconds..."
+            sleep $RETRY_INTERVAL
+          done
+          
+          echo "Health check failed after $MAX_RETRIES attempts. Initiating rollback."
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "cd /opt/demo && ./rollback.sh staging"
+          exit 1
+      
+      - name: Run Smoke Tests
+        env:
+          EC2_HOST: ${{ secrets.STAGING_EC2_HOST }}
+        run: |
+          # Run basic smoke tests against the API
+          API_URL="http://$EC2_HOST:8080/api/users"
+          
+          # Test user creation
+          CREATE_RESPONSE=$(curl -s -X POST -H "Content-Type: application/json" \
+            -d '{"userName":"testuser","pin":"123456","emailId":"test@example.com","mobileNumber":"1234567890"}' \
+            $API_URL)
+          
+          if [[ $CREATE_RESPONSE == *""userName":"testuser""* ]]; then
+            echo "Smoke test passed: User creation successful"
+          else
+            echo "Smoke test failed: User creation failed"
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+              "cd /opt/demo && ./rollback.sh staging"
+            exit 1
+          fi
+
+  deploy-production:
+    needs: prepare
+    if: needs.prepare.outputs.environment == 'production'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up JDK 22
+        uses: actions/setup-java@v3
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+      
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: demo-app
+          path: target/
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      - name: Deploy to Production EC2
+        id: deploy
+        env:
+          EC2_HOST: ${{ secrets.PROD_EC2_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+          ELB_NAME: ${{ secrets.PROD_ELB_NAME }}
+        run: |
+          # Setup SSH
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/private_key
+          chmod 600 ~/.ssh/private_key
+          
+          # Create deployment directory structure for blue-green deployment
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "mkdir -p /opt/demo/releases/$APP_VERSION"
+          
+          # Upload JAR file
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/private_key \
+            target/demo-*.jar ec2-user@$EC2_HOST:/opt/demo/releases/$APP_VERSION/demo.jar
+          
+          # Upload application properties for production environment
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/private_key \
+            src/main/resources/application-prod.properties ec2-user@$EC2_HOST:/opt/demo/releases/$APP_VERSION/application.properties
+          
+          # Execute blue-green deployment script for production
+          # This script will:
+          # 1. Start the new version on a different port
+          # 2. Verify it's running correctly
+          # 3. Gradually shift traffic from old to new version
+          # 4. Monitor for errors during transition
+          # 5. Complete the switch when stable
+          # 6. Shut down the old version
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "cd /opt/demo && ./deploy.sh $APP_VERSION production"
+          
+          # Store the deployment result
+          DEPLOY_RESULT=$?
+          if [ $DEPLOY_RESULT -ne 0 ]; then
+            echo "Deployment failed, initiating rollback"
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+              "cd /opt/demo && ./rollback.sh production"
+            exit 1
+          fi
+      
+      - name: Verify Health Check
+        env:
+          EC2_HOST: ${{ secrets.PROD_EC2_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          # Wait for application to start
+          sleep 10
+          
+          # Perform health check
+          HEALTH_CHECK_URL="http://$EC2_HOST:8080/actuator/health"
+          MAX_RETRIES=12
+          RETRY_INTERVAL=5
+          
+          for i in $(seq 1 $MAX_RETRIES); do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $HEALTH_CHECK_URL)
+            if [ $HTTP_STATUS -eq 200 ]; then
+              echo "Health check passed!"
+              
+              # Additional Java 22 specific checks
+              # Verify the application is running on Java 22
+              JAVA_VERSION=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+                "ps -ef | grep java | grep demo.jar | grep -o 'java-22' || echo 'not-found'")
+              
+              if [[ $JAVA_VERSION == *"java-22"* ]]; then
+                echo "Java 22 verification passed!"
+                
+                # Additional production-specific checks
+                # Verify memory usage is within acceptable limits
+                MEM_USAGE=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+                  "ps -o %mem -p \$(pgrep -f demo.jar) | tail -1")
+                
+                if (( $(echo "$MEM_USAGE < 80.0" | bc -l) )); then
+                  echo "Memory usage check passed: $MEM_USAGE%"
+                  exit 0
+                else
+                  echo "Memory usage too high: $MEM_USAGE%. Initiating rollback."
+                  ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+                    "cd /opt/demo && ./rollback.sh production"
+                  exit 1
+                fi
+              else
+                echo "Java 22 verification failed! Application might be running on wrong Java version."
+                ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+                  "cd /opt/demo && ./rollback.sh production"
+                exit 1
+              fi
+            fi
+            echo "Health check attempt $i failed with status $HTTP_STATUS. Retrying in $RETRY_INTERVAL seconds..."
+            sleep $RETRY_INTERVAL
+          done
+          
+          echo "Health check failed after $MAX_RETRIES attempts. Initiating rollback."
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "cd /opt/demo && ./rollback.sh production"
+          exit 1
+      
+      - name: Run Smoke Tests
+        env:
+          EC2_HOST: ${{ secrets.PROD_EC2_HOST }}
+        run: |
+          # Run comprehensive smoke tests against the API
+          API_URL="http://$EC2_HOST:8080/api/users"
+          
+          # Test user creation
+          CREATE_RESPONSE=$(curl -s -X POST -H "Content-Type: application/json" \
+            -d '{"userName":"produser","pin":"123456","emailId":"prod@example.com","mobileNumber":"1234567890"}' \
+            $API_URL)
+          
+          if [[ $CREATE_RESPONSE == *""userName":"produser""* ]]; then
+            echo "Smoke test passed: User creation successful"
+          else
+            echo "Smoke test failed: User creation failed"
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+              "cd /opt/demo && ./rollback.sh production"
+            exit 1
+          fi
+      
+      - name: Update Load Balancer
+        if: success()
+        env:
+          EC2_HOST: ${{ secrets.PROD_EC2_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          ELB_NAME: ${{ secrets.PROD_ELB_NAME }}
+        run: |
+          # Get the instance ID
+          INSTANCE_ID=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "curl -s http://169.254.169.254/latest/meta-data/instance-id")
+          
+          # Get the current port that the new application is running on
+          # This is part of the blue-green deployment strategy where the new version
+          # runs on a different port until it's verified
+          NEW_PORT=$(ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+            "cat /opt/demo/current/port")
+          
+          # Update the load balancer to route traffic to the new instance and port
+          aws elb register-instances-with-load-balancer \
+            --load-balancer-name $ELB_NAME \
+            --instances $INSTANCE_ID
+          
+          # Configure the load balancer to use the new port
+          aws elb create-load-balancer-listeners \
+            --load-balancer-name $ELB_NAME \
+            --listeners "Protocol=HTTP,LoadBalancerPort=80,InstanceProtocol=HTTP,InstancePort=$NEW_PORT"
+          
+          echo "Load balancer updated to route traffic to the new instance on port $NEW_PORT"
+          
+          # Wait for traffic to stabilize on the new instance
+          echo "Waiting for traffic to stabilize on the new instance..."
+          sleep 30
+          
+          # Verify that the load balancer is properly routing traffic
+          LB_HEALTH=$(aws elb describe-instance-health \
+            --load-balancer-name $ELB_NAME \
+            --instances $INSTANCE_ID \
+            --query 'InstanceStates[0].State' \
+            --output text)
+          
+          if [[ "$LB_HEALTH" == "InService" ]]; then
+            echo "Load balancer health check passed: Instance is InService"
+          else
+            echo "Load balancer health check failed: Instance is $LB_HEALTH. Initiating rollback."
+            ssh -o StrictHostKeyChecking=no -i ~/.ssh/private_key ec2-user@$EC2_HOST \
+              "cd /opt/demo && ./rollback.sh production"
+            exit 1
+          fi
+      
+      - name: Create Deployment Tag and Release Notes
+        if: success() && github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create deployment tag
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          DEPLOY_TAG="deploy-${{ needs.prepare.outputs.version }}"
+          git tag -a "$DEPLOY_TAG" -m "Deployed version ${{ needs.prepare.outputs.version }} to production"
+          git push origin "$DEPLOY_TAG"
+          
+          # Update release notes with deployment information
+          DEPLOY_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          RELEASE_NOTES="## Deployment Information\n\n"
+          RELEASE_NOTES+="- **Deployed Version:** ${{ needs.prepare.outputs.version }}\n"
+          RELEASE_NOTES+="- **Deployment Date:** $DEPLOY_DATE\n"
+          RELEASE_NOTES+="- **Environment:** Production\n"
+          RELEASE_NOTES+="- **Java Version:** 22\n"
+          RELEASE_NOTES+="- **Deployment Type:** Blue-Green\n\n"
+          RELEASE_NOTES+="### Post-Deployment Verification\n\n"
+          RELEASE_NOTES+="- ✅ Health Checks: Passed\n"
+          RELEASE_NOTES+="- ✅ Smoke Tests: Passed\n"
+          RELEASE_NOTES+="- ✅ Load Balancer Configuration: Updated\n"
+          
+          # Append deployment notes to the release
+          gh release edit ${{ needs.prepare.outputs.version }} --notes "$(gh release view ${{ needs.prepare.outputs.version }} --json body -q .body)\n\n$RELEASE_NOTES"
+          
+          echo "Deployment tag and release notes created successfully"

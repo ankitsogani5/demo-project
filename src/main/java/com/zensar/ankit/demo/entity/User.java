@@ -1,37 +1,37 @@
 package com.zensar.ankit.demo.entity;
 
-import javax.persistence.Entity;
-import javax.persistence.GeneratedValue;
-import javax.persistence.GenerationType;
-import javax.persistence.Id;
-import javax.validation.constraints.NotNull;
-import javax.validation.constraints.Pattern;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 @Entity
 public class User {
 
 	@Id
 	@GeneratedValue(strategy = GenerationType.AUTO)
-	@ApiModelProperty(notes = "The database generated product ID")
+	@Schema(description = "The database generated product ID")
 	private Long id;
 
 	@NotNull(message = "Name cannot be null")
-	@ApiModelProperty(notes = "user Name", required=true)
+	@Schema(description = "user Name", required=true)
 	private String userName;
 
 	@NotNull(message = "pin cannot be null")
-	@ApiModelProperty(notes = "pin code (6 digit number)", required=true)
+	@Schema(description = "pin code (6 digit number)", required=true)
 	@Pattern(regexp = "[\\d]{6}", message = "pin should be 6 digit number")
 	private String pin;
 
 	@NotNull(message = "email cannot be null")
-	@ApiModelProperty(notes = "email id", required=true)
+	@Schema(description = "email id", required=true)
 	private String emailId;
 
 	@NotNull(message = "mobile number cannot be null")
-	@ApiModelProperty(notes = "mobile number (10 digit number)", required=true)
+	@Schema(description = "mobile number (10 digit number)", required=true)
 	@Pattern(regexp = "[\\d]{10}", message = "mobile number should be 10 digit number")
 	private String mobileNumber;
 
