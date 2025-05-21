@@ -1,0 +1,150 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  S3_BUCKET: demo-app-artifacts
+  S3_PREFIX: builds
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up JDK 22
+      uses: actions/setup-java@v3
+      with:
+        java-version: '22'
+        distribution: 'temurin'
+        cache: maven
+        
+    - name: Cache Maven packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.m2
+        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+        restore-keys: ${{ runner.os }}-m2
+    
+    - name: Build and run unit tests
+      run: mvn -B clean test --file pom.xml
+      
+    - name: Run integration tests
+      run: mvn -B verify -DskipUnitTests=true --file pom.xml
+      
+    - name: Generate JaCoCo coverage report
+      run: mvn -B jacoco:report --file pom.xml
+      
+    - name: Publish test results
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results
+        path: target/surefire-reports/
+        retention-days: 7
+      
+    - name: Check coverage thresholds
+      run: |
+        mvn -B jacoco:check --file pom.xml \
+        -Djacoco.minimum.overall.line=0.85 \
+        -Djacoco.minimum.overall.branch=0.80 \
+        -Djacoco.minimum.service.line=0.90 \
+        -Djacoco.minimum.service.branch=0.85 \
+        -Djacoco.minimum.repository.line=0.85 \
+        -Djacoco.minimum.repository.branch=0.80 \
+        -Djacoco.minimum.controller.line=0.85 \
+        -Djacoco.minimum.controller.branch=0.80
+      
+    - name: Package application
+      run: mvn -B package -DskipTests --file pom.xml
+      
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-reports
+        path: target/site/jacoco/
+        retention-days: 7
+        
+    - name: Upload JAR artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: application-jar
+        path: target/*.jar
+        retention-days: 7
+        
+    - name: Configure AWS credentials
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Generate build info
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      id: build-info
+      run: |
+        echo "timestamp=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_OUTPUT
+        echo "commit-short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+    
+    - name: Upload JAR to S3
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      id: s3-upload
+      run: |
+        # Get the JAR file name
+        JAR_FILE=$(find target -name "*.jar" -type f | head -n 1)
+        JAR_FILENAME=$(basename "$JAR_FILE")
+        
+        # Create a versioned filename with timestamp and commit hash
+        VERSIONED_FILENAME="${JAR_FILENAME%.jar}-${{ steps.build-info.outputs.timestamp }}-${{ steps.build-info.outputs.commit-short }}.jar"
+        
+        # Upload to S3
+        aws s3 cp "$JAR_FILE" "s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/$VERSIONED_FILENAME"
+        
+        # Output the S3 URL for reference
+        echo "JAR uploaded to s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/$VERSIONED_FILENAME"
+        echo "s3-artifact-url=s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/$VERSIONED_FILENAME" >> $GITHUB_ENV
+        echo "filename=$VERSIONED_FILENAME" >> $GITHUB_OUTPUT
+      
+    - name: Create build summary
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        echo "### Build Summary :rocket:" >> $GITHUB_STEP_SUMMARY
+        echo "* **Build Time:** $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "* **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "* **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "* **Artifact:** ${{ steps.s3-upload.outputs.filename }}" >> $GITHUB_STEP_SUMMARY
+        echo "* **S3 Location:** s3://${{ env.S3_BUCKET }}/${{ env.S3_PREFIX }}/${{ steps.s3-upload.outputs.filename }}" >> $GITHUB_STEP_SUMMARY
+    
+    - name: Notify on failure
+      if: failure()
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const { repo, owner } = context.repo;
+          const run_link = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+          
+          // For pull requests, comment on the PR
+          if (context.payload.pull_request) {
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `❌ [Build failed](${run_link}) for commit ${context.sha}. Please check the logs for more details.`
+            });
+          } else {
+            // For push to main, create an issue
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `❌ Build failed for commit ${context.sha.substring(0, 7)}`,
+              body: `The build [failed](${run_link}) for commit ${context.sha} on branch ${context.ref.replace('refs/heads/', '')}. Please check the logs for more details.`,
+              labels: ['build-failure', 'bug']
+            });
+          }
